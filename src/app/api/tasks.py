@@ -15,6 +15,7 @@ from src.app.schemas.task import (
     TaskStatus,
     PaginationMeta,
 )
+from src.app.workers.task_handlers import process_task
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
@@ -57,6 +58,9 @@ async def submit_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     db.add(task)
     await db.commit()
     await db.refresh(task)
+
+    # Submit the task for processing
+    process_task.delay(task.task_id)
 
     return _row_to_response(task)
 

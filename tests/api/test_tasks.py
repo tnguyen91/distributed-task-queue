@@ -13,24 +13,27 @@ async def test_submit_task(client):
     )
     assert response.status_code == 202
     data = response.json()
-    assert data["status"] == "pending"
     assert data["task_id"].startswith("tsk_")
     assert data["task_type"] == "image_resize"
+    assert data["status"] == "pending"
 
 
 @pytest.mark.asyncio
-async def test_get_task(client):
-    # First create a task
+async def test_task_gets_processed(client):
     create_resp = await client.post(
         "/api/v1/tasks",
-        json={"task_type": "test_job"},
+        json={"task_type": "test_job", "payload": {"key": "value"}},
     )
     task_id = create_resp.json()["task_id"]
 
-    # Then retrieve it
     get_resp = await client.get(f"/api/v1/tasks/{task_id}")
     assert get_resp.status_code == 200
-    assert get_resp.json()["task_id"] == task_id
+
+    data = get_resp.json()
+    assert data["status"] == "completed"
+    assert data["result"] is not None
+    assert data["started_at"] is not None
+    assert data["completed_at"] is not None
 
 
 @pytest.mark.asyncio
@@ -41,6 +44,10 @@ async def test_get_nonexistent_task(client):
 
 @pytest.mark.asyncio
 async def test_cancel_pending_task(client):
+    from src.app.workers.celery_app import celery as celery_app
+
+    celery_app.conf.update(task_always_eager=False)
+
     create_resp = await client.post(
         "/api/v1/tasks",
         json={"task_type": "test_job"},
@@ -51,23 +58,24 @@ async def test_cancel_pending_task(client):
     assert cancel_resp.status_code == 200
     assert cancel_resp.json()["status"] == "cancelled"
 
+    # Re-enable eager mode for remaining tests
+    celery_app.conf.update(task_always_eager=True)
+
 
 @pytest.mark.asyncio
-async def test_cancel_already_cancelled_task(client):
+async def test_cancel_completed_task(client):
     create_resp = await client.post(
         "/api/v1/tasks",
         json={"task_type": "test_job"},
     )
     task_id = create_resp.json()["task_id"]
 
-    await client.delete(f"/api/v1/tasks/{task_id}")
-    second_cancel = await client.delete(f"/api/v1/tasks/{task_id}")
-    assert second_cancel.status_code == 409
+    cancel_resp = await client.delete(f"/api/v1/tasks/{task_id}")
+    assert cancel_resp.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_list_tasks_pagination(client):
-    # Create 3 tasks
     for i in range(3):
         await client.post("/api/v1/tasks", json={"task_type": f"job_{i}"})
 
@@ -80,17 +88,12 @@ async def test_list_tasks_pagination(client):
 
 @pytest.mark.asyncio
 async def test_list_tasks_filter_by_status(client):
-    create_resp = await client.post(
-        "/api/v1/tasks",
-        json={"task_type": "to_cancel"},
-    )
-    task_id = create_resp.json()["task_id"]
-    await client.delete(f"/api/v1/tasks/{task_id}")
+    await client.post("/api/v1/tasks", json={"task_type": "job_a"})
 
-    response = await client.get("/api/v1/tasks?status=cancelled")
+    response = await client.get("/api/v1/tasks?status=completed")
     data = response.json()
-    cancelled_ids = [t["task_id"] for t in data["tasks"]]
-    assert task_id in cancelled_ids
+    assert len(data["tasks"]) >= 1
+    assert all(t["status"] == "completed" for t in data["tasks"])
 
 
 @pytest.mark.asyncio
