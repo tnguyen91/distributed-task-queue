@@ -5,17 +5,29 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+import redis as sync_redis_lib
+
 from src.app.core.config import settings
 from src.app.models.task import Task
 from src.app.schemas.task import TaskStatus
 from src.app.workers.celery_app import celery
+from src.app.services.cache import CACHE_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
 
 sync_database_url = settings.database_url.replace("+asyncpg", "+psycopg2")
 sync_engine = create_engine(sync_database_url)
 SyncSession = sessionmaker(sync_engine)
+sync_redis = sync_redis_lib.Redis.from_url(
+    settings.redis_url,
+    decode_responses=True,
+)
 
+def _invalidate_cache(task_id: str) -> None:
+    try:
+        sync_redis.delete(f"{CACHE_KEY_PREFIX}{task_id}")
+    except sync_redis_lib.RedisError as exc:
+        logger.warning("Failed to invalidate cache for %s: %s", task_id, exc)
 
 def _execute_task(task_type: str, payload: dict) -> dict:
     # Simulation
@@ -55,6 +67,7 @@ def process_task(self, task_id: str):
         task.status = TaskStatus.running
         task.started_at = datetime.now(timezone.utc)
         session.commit()
+        _invalidate_cache(task_id)
 
         try:
             result = _execute_task(task.task_type, task.payload)
@@ -63,6 +76,7 @@ def process_task(self, task_id: str):
             task.result = result
             task.completed_at = datetime.now(timezone.utc)
             session.commit()
+            _invalidate_cache(task_id)
             logger.info("Task %s completed", task_id)
 
         except Exception as exc:
@@ -73,10 +87,14 @@ def process_task(self, task_id: str):
                 task.error_message = str(exc)
                 task.completed_at = datetime.now(timezone.utc)
                 session.commit()
+                _invalidate_cache(task_id)
+
                 logger.error("Task %s failed permanently: %s", task_id, exc)
                 return
 
             session.commit()
+            _invalidate_cache(task_id)
+
             logger.warning(
                 "Task %s failed (attempt %d/%d), retrying: %s",
                 task_id, task.retry_count, task.max_retries, exc,
