@@ -2,18 +2,26 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.api.dependencies import rate_limit
 from src.app.core.deps import get_db
+from src.app.core.redis_client import get_redis
 from src.app.models.task import Task
 from src.app.schemas.task import (
+    PaginationMeta,
     TaskCreate,
     TaskListResponse,
     TaskPriority,
     TaskResponse,
     TaskStatus,
-    PaginationMeta,
+)
+from src.app.services.cache import (
+    cache_task,
+    get_cached_task,
+    invalidate_task_cache,
 )
 from src.app.workers.task_handlers import process_task
 
@@ -41,7 +49,12 @@ def _row_to_response(task: Task) -> TaskResponse:
     )
 
 
-@router.post("", status_code=202, response_model=TaskResponse)
+@router.post(
+    "",
+    status_code=202,
+    response_model=TaskResponse,
+    dependencies=[Depends(rate_limit(limit=10, window_seconds=60))],
+)
 async def submit_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
 
@@ -59,24 +72,44 @@ async def submit_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(task)
 
-    # Submit the task for processing
     process_task.delay(task.task_id)
 
     return _row_to_response(task)
 
 
-@router.get("/{task_id}", response_model=TaskResponse)
-async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
+@router.get(
+    "/{task_id}",
+    response_model=TaskResponse,
+    dependencies=[Depends(rate_limit(limit=120, window_seconds=60))],
+)
+async def get_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    # Check the cache first
+    cached = await get_cached_task(redis, task_id)
+    if cached is not None:
+        return cached
+
+    # Cache miss: read from the database
     stmt = select(Task).where(Task.task_id == task_id)
     result = await db.execute(stmt)
     task = result.scalar_one_or_none()
 
     if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    return _row_to_response(task)
+
+    response = _row_to_response(task)
+    await cache_task(redis, response)
+    return response
 
 
-@router.get("", response_model=TaskListResponse)
+@router.get(
+    "",
+    response_model=TaskListResponse,
+    dependencies=[Depends(rate_limit(limit=60, window_seconds=60))],
+)
 async def list_tasks(
     status: TaskStatus | None = Query(default=None),
     priority: TaskPriority | None = Query(default=None),
@@ -93,12 +126,10 @@ async def list_tasks(
 
     query = query.order_by(Task.created_at.desc())
 
-    # Get total count for pagination metadata
     count_stmt = select(func.count()).select_from(query.subquery())
     total_count = (await db.execute(count_stmt)).scalar_one()
     total_pages = max(1, (total_count + per_page - 1) // per_page)
 
-    # Apply pagination
     query = query.offset((page - 1) * per_page).limit(per_page)
     result = await db.execute(query)
     tasks = result.scalars().all()
@@ -115,7 +146,11 @@ async def list_tasks(
 
 
 @router.delete("/{task_id}", response_model=TaskResponse)
-async def cancel_task(task_id: str, db: AsyncSession = Depends(get_db)):
+async def cancel_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
     stmt = select(Task).where(Task.task_id == task_id)
     result = await db.execute(stmt)
     task = result.scalar_one_or_none()
@@ -126,11 +161,15 @@ async def cancel_task(task_id: str, db: AsyncSession = Depends(get_db)):
     if task.status != TaskStatus.pending:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot cancel task in '{task.status.value}' state. Only pending tasks can be cancelled.",
+            detail=f"Cannot cancel task in '{task.status.value}' state. "
+                   "Only pending tasks can be cancelled.",
         )
 
     task.status = TaskStatus.cancelled
     await db.commit()
     await db.refresh(task)
+
+    # Invalidate the cache so subsequent reads see the new state
+    await invalidate_task_cache(redis, task_id)
 
     return _row_to_response(task)
