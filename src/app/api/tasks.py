@@ -24,6 +24,7 @@ from src.app.services.cache import (
     invalidate_task_cache,
 )
 from src.app.workers.task_handlers import process_task
+from src.app.core.metrics import tasks_submitted_total
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
@@ -73,6 +74,7 @@ async def submit_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     await db.refresh(task)
 
     process_task.delay(task.task_id)
+    tasks_submitted_total.labels(task_type=task.task_type).inc()
 
     return _row_to_response(task)
 

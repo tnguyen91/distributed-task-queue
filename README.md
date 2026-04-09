@@ -5,22 +5,22 @@ A distributed task queue with real-time monitoring, built with FastAPI, PostgreS
 ## Architecture
 
 ```
-┌─────────┐       ┌──────────────────┐
-│  Client  │──────▶│  FastAPI Server   │
-└─────────┘ HTTP  │  (validates,      │
-                   │   routes, caches) │
+┌─────────┐        ┌──────────────────┐
+│  Client │──────▶│  FastAPI Server   │
+└─────────┘ HTTP   │  (validates,     │
+                   │  routes, caches) │
                    └──┬──────┬────────┘
                       │      │
               ┌───────▼──┐ ┌─▼───────────┐
-              │PostgreSQL │ │    Redis     │
-              │(durable   │ │(broker +    │
-              │ storage)  │ │ cache)      │
+              │PostgreSQL│ │    Redis    │
+              │(durable  │ │(broker +    │
+              │ storage) │ │ cache)      │
               └───────▲──┘ └─┬───────────┘
                       │      │
                    ┌──┴──────▼────────┐
-                   │  Celery Workers   │
-                   │  (execute tasks,  │
-                   │   store results)  │
+                   │  Celery Workers  │
+                   │  (execute tasks, │
+                   │   store results) │
                    └──────────────────┘
 ```
 

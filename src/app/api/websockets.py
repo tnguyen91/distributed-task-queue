@@ -1,0 +1,43 @@
+import asyncio
+import logging
+
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from redis.asyncio import Redis
+
+from src.app.core.redis_client import get_redis
+from src.app.services.event_stream import subscribe_to_task_events
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/tasks/ws", tags=["websockets"])
+
+
+@router.websocket("/{task_id}")
+async def task_event_stream(
+    websocket: WebSocket,
+    task_id: str,
+    redis: Redis = Depends(get_redis),
+):
+    await websocket.accept()
+    logger.info("WebSocket connected for task %s", task_id)
+
+    try:
+        async for message in subscribe_to_task_events(redis, task_id):
+            if message is None:
+                # Heartbeat tick: confirm the client is still connected
+                try:
+                    await websocket.send_text('{"type":"ping"}')
+                except Exception:
+                    break
+                continue
+
+            await websocket.send_text(message)
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected for task %s", task_id)
+    except Exception as exc:
+        logger.exception("WebSocket error for task %s: %s", task_id, exc)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
