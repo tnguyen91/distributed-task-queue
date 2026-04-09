@@ -21,8 +21,24 @@ async def task_event_stream(
     await websocket.accept()
     logger.info("WebSocket connected for task %s", task_id)
 
+    disconnected = asyncio.Event()
+
+    async def _wait_for_disconnect() -> None:
+        try:
+            while True:
+                data = await websocket.receive()
+                if data.get("type") == "websocket.disconnect":
+                    break
+        except Exception:
+            pass
+        disconnected.set()
+
+    disconnect_task = asyncio.create_task(_wait_for_disconnect())
+
     try:
         async for message in subscribe_to_task_events(redis, task_id):
+            if disconnected.is_set():
+                break
             if message is None:
                 # Heartbeat tick: confirm the client is still connected
                 try:
@@ -30,14 +46,19 @@ async def task_event_stream(
                 except Exception:
                     break
                 continue
-
-            await websocket.send_text(message)
+            try:
+                await websocket.send_text(message)
+            except Exception:
+                break
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for task %s", task_id)
     except Exception as exc:
         logger.exception("WebSocket error for task %s: %s", task_id, exc)
     finally:
+        disconnected.set()
+        disconnect_task.cancel()
         try:
-            await websocket.close()
-        except Exception:
+            await disconnect_task
+        except asyncio.CancelledError:
             pass
+        logger.info("WebSocket handler exiting for task %s", task_id)
