@@ -1,5 +1,7 @@
+import asyncio
+
 import pytest
-from httpx import ASGITransport
+from httpx import AsyncClient
 from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
@@ -9,9 +11,12 @@ from src.app.main import app
 @pytest.mark.asyncio
 async def test_websocket_accepts_connection():
     """Verify the WebSocket endpoint accepts a connection without errors."""
-    transport = ASGIWebSocketTransport(app=app)
-    async with aconnect_ws(
-        "http://test/api/v1/tasks/ws/tsk_dummy",
-        transport=transport,
-    ) as ws:
-        assert ws is not None
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app), base_url="http://test"
+    ) as client:
+        async with aconnect_ws("/api/v1/tasks/ws/tsk_dummy", client) as ws:
+            assert ws is not None
+            # Receive the first heartbeat ping to confirm the connection is live,
+            # then exit — the context manager closes the socket on exit.
+            message = await asyncio.wait_for(ws.receive_text(), timeout=5.0)
+            assert message == '{"type":"ping"}'
