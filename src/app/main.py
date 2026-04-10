@@ -6,7 +6,6 @@ from starlette_prometheus import PrometheusMiddleware, metrics
 from src.app.api import health, tasks, websockets
 from src.app.core.config import settings
 from src.app.core.redis_client import redis_client
-from src.app.core.redis_client import get_redis
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
