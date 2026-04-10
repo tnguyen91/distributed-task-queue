@@ -1,5 +1,7 @@
 # Distributed Task Queue
 
+![CI](https://github.com/tnguyen91/distributed-task-queue/actions/workflows/ci.yml/badge.svg)
+
 A distributed task queue with real-time monitoring, built with FastAPI, PostgreSQL, Redis, and Celery.
 
 ## Architecture
@@ -75,13 +77,45 @@ A distributed task queue with real-time monitoring, built with FastAPI, PostgreS
 
 ## Quick start
 
+### Run everything with Docker
+
 ```bash
-git clone https://github.com/YOUR_USERNAME/distributed-task-queue.git
-cd distributed-task-queue
-pip install -r requirements.txt
-uvicorn src.app.main:app --reload
-# Docs: http://localhost:8000/docs
+docker compose up --build
 ```
+
+This builds the application image and starts PostgreSQL, Redis, the API server, and a Celery worker. Database migrations run automatically on startup. The API is available at http://localhost:8000/docs.
+
+To stop and remove everything:
+
+```bash
+docker compose down
+```
+
+To also delete the PostgreSQL data volume:
+
+```bash
+docker compose down -v
+```
+
+### Local development with hot reload
+
+For development with code reloading, run the app on the host and use Docker only for infrastructure:
+
+```bash
+# Start Postgres and Redis in the background
+docker compose up postgres redis -d
+
+# Apply migrations
+alembic upgrade head
+
+# In one terminal: API server
+uvicorn src.app.main:app --reload
+
+# In another terminal: Celery worker
+celery -A src.app.workers.celery_app worker --loglevel=info
+```
+
+On Windows, the worker pool is automatically configured to `solo` since prefork requires `os.fork()`.
 
 ## Project structure
 
