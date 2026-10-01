@@ -125,6 +125,7 @@ def process_task(self, task_id: str):
                 logger.error("Task %s failed permanently: %s", task_id, exc)
                 return
 
+            task.status = TaskStatus.pending
             session.commit()
             _invalidate_cache(task_id)
             publish_task_event_sync(sync_redis, task_id, {
